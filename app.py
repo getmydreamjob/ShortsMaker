@@ -1,41 +1,55 @@
 import streamlit as st
 import whisper
-from moviepy.editor import VideoFileClip
 from keybert import KeyBERT
+import subprocess
 import os
 
 st.set_page_config(page_title="AI Video Highlighter", layout="centered")
 
 st.title("🎬 AI-Powered Video Highlighter")
-st.write("Upload a video or paste a YouTube link. This app will generate highlight clips with virality scores.")
+st.write("Upload a video file. This app will generate highlight clips with virality scores.")
 
-# 📂 Output folder
 OUTPUT_FOLDER = "highlight_clips"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-video_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi"])
+video_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi", "mkv"])
+
+def cut_video_ffmpeg(input_file, start, duration, output_file):
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", input_file,
+        "-ss", str(start),
+        "-t", str(duration),
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        output_file,
+        "-y"
+    ]
+    subprocess.run(cmd, check=True)
 
 if video_file:
-    with open("input_video.mp4", "wb") as f:
+    input_video_path = "input_video.mp4"
+    with open(input_video_path, "wb") as f:
         f.write(video_file.read())
-    VIDEO_PATH = "input_video.mp4"
-
-    st.video(VIDEO_PATH)
     
+    st.video(input_video_path)
+
     if st.button("Generate Highlights"):
         with st.spinner("🔍 Transcribing video..."):
             model = whisper.load_model("base")
-            result = model.transcribe(VIDEO_PATH)
+            result = model.transcribe(input_video_path)
         
-        st.success("Transcription complete.")
-        
-        # Extract keywords
+        st.success("✅ Transcription complete.")
+
+        # Keyword extraction
         kw_model = KeyBERT()
         keywords = kw_model.extract_keywords(result["text"], keyphrase_ngram_range=(1,2), stop_words='english', top_n=10)
         keyword_list = [kw[0].lower() for kw in keywords]
-        
+
         st.write(f"**Top Keywords:** {', '.join(keyword_list)}")
-        
+
         segments = result["segments"]
         ranked_segments = []
         for seg in segments:
@@ -53,33 +67,32 @@ if video_file:
             })
 
         ranked_segments.sort(key=lambda x: x["score"], reverse=True)
+
+        st.write("## 🎉 Generated Highlight Clips:")
         
-        video = VideoFileClip(VIDEO_PATH)
-        clips = []
+        clip_duration = 60  # seconds
+        num_clips = 3
+        clip_count = 0
         
-        clip_duration = 60
-        for seg in ranked_segments:
-            start = seg["start"]
-            end = min(start + clip_duration, video.duration)
-            if end - start < 10:
-                continue
-            clip = video.subclip(start, end)
-            clips.append((clip, seg))
-            if len(clips) >= 3:
+        for idx, seg in enumerate(ranked_segments):
+            if clip_count >= num_clips:
                 break
-        
-        st.write("## 🎉 Top Highlight Clips:")
-        
-        for idx, (clip, seg) in enumerate(clips):
-            output_file = os.path.join(OUTPUT_FOLDER, f"highlight_{idx+1}.mp4")
-            clip.write_videofile(output_file, codec="libx264", audio_codec="aac")
-            
-            virality_score = min(100, round(seg["score"] / ranked_segments[0]["score"] * 100))
-            
-            st.video(output_file)
-            st.write(f"**Clip {idx+1}:** Virality Score: {virality_score}/100")
-            with open(output_file, "rb") as f:
-                st.download_button(label="Download Clip", data=f, file_name=f"highlight_{idx+1}.mp4", mime="video/mp4")
-        
-        st.success("✅ Highlights generated!")
+            start_time = seg["start"]
+            end_time = min(start_time + clip_duration, seg["end"])
+            if end_time - start_time < 10:
+                continue
+            output_file = os.path.join(OUTPUT_FOLDER, f"highlight_{clip_count+1}.mp4")
+            try:
+                cut_video_ffmpeg(input_video_path, start_time, end_time - start_time, output_file)
+                virality_score = min(100, round(seg["score"] / ranked_segments[0]["score"] * 100))
+                st.video(output_file)
+                st.write(f"**Clip {clip_count+1}:** Virality Score: {virality_score}/100")
+                with open(output_file, "rb") as f:
+                    st.download_button(label="Download Clip", data=f, file_name=f"highlight_{clip_count+1}.mp4", mime="video/mp4")
+                clip_count += 1
+            except Exception as e:
+                st.error(f"❌ Failed to cut clip: {e}")
+
+        if clip_count == 0:
+            st.warning("No suitable highlights found.")
 
