@@ -3,3 +3,4 @@ openai-whisper
 keybert
 moviepy
 tqdm
+imageio[ffmpeg]
